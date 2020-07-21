@@ -1,0 +1,247 @@
+job("devops_task6_job1"){
+  description("Job1 description")
+  label('kubectl')
+  scm {
+    github('ssjnm/developerrepo', 'master')
+  }
+  
+  triggers {
+    scm("* * * * *")   
+  }
+
+  steps {
+    shell("""cat <<EOF > php.yml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "pvc1"
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myweb-deploy 
+spec:
+  replicas: 3 
+  selector: 
+     matchLabels:
+       env: production
+  template:
+    metadata:
+      name: myphp-pod
+      labels:
+        env: production
+    spec:
+      containers:
+        - name: myphp-image
+          image: ssjnm/php-webserver
+          volumeMounts:
+           - name: "phpvolume"
+             mountPath: /var/www/html
+      volumes:
+      - name: "phpvolume"
+        persistentVolumeClaim:
+          claimName : "pvc1"
+---
+EOF
+
+cat <<EOF > html.yml 
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "pvc1"
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myweb-deploy 
+spec:
+  replicas: 3 
+  selector: 
+     matchLabels:
+       env: production
+  template:
+    metadata:
+      name: myhttpd-pod
+      labels:
+        env: production
+    spec:
+      containers:
+        - name: myhttpd-mage
+          image: httpd
+          volumeMounts:
+           - name: "volume"
+             mountPath: /usr/sbin/apache2/htdocs/
+      volumes:
+      - name: "htmlvolume"
+        persistentVolumeClaim:
+          claimName : "pvc1" 
+---
+EOF """)
+  }
+
+  publishers {
+    downstream('devops_task6_job2', 'SUCCESS')
+  }
+}
+
+job("devops_task6_job2"){
+  description("Job1 description")
+  label('kubectl')
+  scm {
+    github('ssjnm/developerrepo', 'master')
+  }
+
+    triggers {
+      upstream('devops_task6_job1', 'SUCCESS')   
+  }
+
+  steps {
+    shell('''sudo kubectl delete all --all
+sudo kubectl delete pvc --all
+#IF repository has both php and htmlcode
+if [ "$(ls |grep .html|wc -l)" != "0" ] && [ "$(ls |grep .php|wc -l)" ]
+then
+sudo kubectl create -f /root/workspace/devops_task6_job1/php.yml
+#Since I have used 3 relplicas
+pod1=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+pod2=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+pod3=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+#Starting kubernetes might take sometime so
+sleep 120
+kubectl cp index.html $pod1:/var/www/html
+kubectl cp index.html $pod2:/var/www/html
+kubectl cp index.html $pod3:/var/www/html
+kubectl cp index.php $pod1:/var/www/html
+kubectl cp index.php $pod2:/var/www/html
+kubectl cp index.php $pod3:/var/www/html
+##############################################
+elif [ "$(ls |grep .html|wc -l)" =! "0" ]
+then
+sudo kubectl create -f /root/workspace/devops_task6_job1/html.yml
+#Since I have used 3 relplicas
+pod1=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+pod2=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+pod3=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+#Starting kubernetes might take sometime so
+sleep 15
+kubectl cp index.html $pod1:/var/www/html
+kubectl cp index.html $pod2:/var/www/html
+kubectl cp index.html $pod3:/var/www/html
+elif [ "$(ls |grep .php|wc -l)" =! "0" ] 
+then
+sudo kubectl create -f /root/workspace/devops_task6_job1/php.yml
+#Since I have used 3 relplicas
+pod1=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+pod2=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+pod3=$(kubectl get pods -o=jsonpath='{.items[0].metadata.name}')
+#Starting kubernetes might take sometime so
+sleep 15
+kubectl cp index.php $pod1:/var/www/html
+kubectl cp index.php $pod2:/var/www/html
+kubectl cp index.php $pod3:/var/www/html
+else
+echo "bye bye"
+fi ''')
+  }
+
+  publishers {
+    downstream('devops_task6_job3', 'SUCCESS')
+  }
+}
+
+job("devops_task6_job3"){
+  description("Job1 description")
+  label('kubectl')
+  scm {
+    github('ssjnm/developerrepo', 'master')
+  }
+  
+    triggers {
+      upstream('devops_task6_job2', 'SUCCESS')   
+  }
+
+  steps{
+    shell('''#Lets expose the pod
+kubectl expose deploy myweb-deploy --port 80 --type=NodePort
+#saving the variable with status code
+port=$(kubectl get svc -o=jsonpath='{.items[1].spec.ports[0].nodePort}')
+
+curl -o /dev/null -s -w "%{http_code}" 192.168.99.101:$port/index.html |tee status_html
+curl -o /dev/null -s -w "%{http_code}" 192.168.99.101:$port/index.html |tee status_php
+
+
+if [ "$(ls |grep .html|wc -l)" != "0" ] && [ "$(ls |grep .php|wc -l)" != "0" ]
+then
+if [ "$(cat status_html)" == "200" ] && [ "$(cat status_php)" == "200" ]
+then
+exit 0
+else
+exit 1
+fi
+elif [ "$(ls -l |grep .php|wc -l)" =! "0" ]
+then
+if [ "$(cat status_php)" == "200" ]
+then
+exit 0
+else
+exit 1
+fi
+elif [ "$(ls -l |grep .html|wc -l)" =! "0" ]
+then
+if [ "$(cat status_html)" == "200" ]
+then
+exit 0
+else
+exit 1
+fi
+else
+echo "Error in code"
+fi ''')
+  }
+
+  publishers {
+        extendedEmail {
+            recipientList('nishant010singh@gmail.com')
+            defaultSubject('Oops')
+            defaultContent('Something broken')
+            contentType('text/html')
+            triggers {
+                beforeBuild()
+                stillUnstable {
+                    subject('CI/CD')
+                    content('Your build is still unstable')
+                    sendTo {
+                        developers()
+                        requester()
+                        culprits()
+                    }
+                }
+            }
+        }
+    }
+}
+
+buildPipelineView('Devops_task') {
+    filterBuildQueue()
+    filterExecutors()
+    title('Project A CI Pipeline')
+    displayedBuilds(5)
+    selectedJob('devops_task6_job1')
+    alwaysAllowManualTrigger()
+    showPipelineParameters()
+    refreshFrequency(60)
+}
